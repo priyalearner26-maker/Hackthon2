@@ -1,0 +1,4 @@
+# Install in a dedicated Python 3.11/3.12 evaluation environment.
+ragas==0.4.3
+langchain-core
+langchain-openai

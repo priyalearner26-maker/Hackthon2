@@ -2,22 +2,30 @@
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+
+def _env_value(name: str, default: str = "", fallback: str | None = None) -> str:
+    value = os.getenv(name, "").strip()
+    if value:
+        return value
+    return fallback if fallback is not None else default
 
 
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
     frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
-    llm_provider: str = os.getenv("LLM_PROVIDER", "openai")
-    llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
-    llm_api_key: str = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
-    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "")
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    llm_provider: str = _env_value("LLM_PROVIDER", default="openai")
+    llm_model: str = _env_value("LLM_MODEL", default="gpt-4o-mini")
+    llm_api_key: str = _env_value("LLM_API_KEY", fallback=_env_value("OPENAI_API_KEY"))
+    openai_base_url: str = _env_value("OPENAI_BASE_URL")
+    openai_api_key: str = _env_value("OPENAI_API_KEY")
     openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     openai_embedding_dimension: int = int(os.getenv("OPENAI_EMBEDDING_DIMENSION", "1536"))
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")

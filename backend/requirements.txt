@@ -4,6 +4,8 @@ python-dotenv
 uvicorn
 pytest
 langchain-community
+langchain-core
+langchain-openai
 atlassian-python-api
 langgraph
 langsmith

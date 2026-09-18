@@ -143,24 +143,24 @@ def chunk_document(path: Path, text: str, chunk_size: int = 900, overlap: int = 
     metadata = metadata or {}
     sections = re.split(r"(?=^#{1,6}\s+)", text.strip(), flags=re.MULTILINE)
     normalized_sections = [re.sub(r"\s+", " ", section).strip() for section in sections if section.strip()]
-    normalized = " ".join(normalized_sections)
     chunks: list[DocumentChunk] = []
-    start = 0
     index = 0
-    while start < len(normalized):
-        end = min(start + chunk_size, len(normalized))
-        if end < len(normalized):
-            boundary = normalized.rfind(" ", start, end)
-            if boundary > start:
-                end = boundary
-        content = normalized[start:end].strip()
-        if content:
-            digest = hashlib.sha256(f"{path}:{index}:{content}".encode()).hexdigest()[:16]
-            chunks.append(DocumentChunk(digest, str(path), content, metadata=metadata))
-        if end == len(normalized):
-            break
-        start = max(end - overlap, start + 1)
-        index += 1
+    for section in normalized_sections:
+        start = 0
+        while start < len(section):
+            end = min(start + chunk_size, len(section))
+            if end < len(section):
+                boundary = section.rfind(" ", start, end)
+                if boundary > start:
+                    end = boundary
+            content = section[start:end].strip()
+            if content:
+                digest = hashlib.sha256(f"{path}:{index}:{content}".encode()).hexdigest()[:16]
+                chunks.append(DocumentChunk(digest, str(path), content, metadata=metadata))
+                index += 1
+            if end == len(section):
+                break
+            start = max(end - overlap, start + 1)
     return chunks
 
 

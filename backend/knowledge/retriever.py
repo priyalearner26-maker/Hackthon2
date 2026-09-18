@@ -13,6 +13,30 @@ from backend.core.models import RetrievedChunk
 from backend.knowledge.loaders import DocumentChunk, load_chunks
 
 
+QUERY_CONCEPTS = {
+    "retail lending": ("loan", "mortgage", "credit", "affordability", "eligibility", "documentation"),
+    "lending": ("loan", "mortgage", "credit", "affordability", "eligibility", "documentation"),
+    "rules": ("policy", "requirements", "procedure", "approved", "controls"),
+    "requirements": ("required", "eligibility", "documentation", "procedure"),
+    "customer verification": ("identity checks", "passcode", "account detail", "fraud"),
+    "project status": ("progress", "risks", "blockers", "defects", "next steps"),
+}
+
+
+def analyze_retrieval_query(query: str) -> dict[str, object]:
+    """Analyze a user query into retrieval concepts without changing the user wording."""
+    normalized = re.sub(r"\s+", " ", query.casefold()).strip()
+    concepts = [name for name in QUERY_CONCEPTS if name in normalized]
+    expanded_terms: list[str] = []
+    for concept in concepts:
+        expanded_terms.extend(QUERY_CONCEPTS[concept])
+    return {
+        "original_query": query,
+        "concepts": concepts,
+        "expanded_query": " ".join(dict.fromkeys([query, *expanded_terms])),
+    }
+
+
 class EmbeddingProvider(Protocol):
     def embed(self, text: str) -> list[float]: ...
 
@@ -174,6 +198,7 @@ class AzureSearchClient:
 class LocalReranker:
     def rerank(self, query: str, chunks: list[tuple[float, DocumentChunk]]) -> list[tuple[float, DocumentChunk]]:
         query_terms = set(_terms(query))
+        ordered_terms = _terms(query)
         if not query_terms:
             return chunks
 
@@ -185,7 +210,16 @@ class LocalReranker:
             source_overlap = len(query_terms & source_terms)
             title_bonus = 0.25 * source_overlap
             content_bonus = 0.1 * overlap
-            reranked.append((score + title_bonus + content_bonus, chunk))
+            normalized_content = _terms(chunk.content)
+            phrase_bonus = sum(
+                8.0
+                for left, right in zip(ordered_terms, ordered_terms[1:])
+                if any(
+                    normalized_content[index:index + 2] == [left, right]
+                    for index in range(max(0, len(normalized_content) - 1))
+                )
+            )
+            reranked.append((score + title_bonus + content_bonus + phrase_bonus, chunk))
 
         reranked.sort(key=lambda item: item[0], reverse=True)
         return reranked
@@ -221,10 +255,17 @@ class LocalLexicalRetriever:
             scored.append((score, chunk))
 
         reranked = self.reranker.rerank(query, scored)
-        return [
-            RetrievedChunk(chunk.chunk_id, chunk.source, chunk.content, score, chunk.page, chunk.metadata)
-            for score, chunk in reranked[:top_k]
-        ]
+        results: list[RetrievedChunk] = []
+        seen_content: set[str] = set()
+        for score, chunk in reranked:
+            content_key = re.sub(r"\s+", " ", chunk.content).strip().casefold()
+            if content_key in seen_content:
+                continue
+            seen_content.add(content_key)
+            results.append(RetrievedChunk(chunk.chunk_id, chunk.source, chunk.content, score, chunk.page, chunk.metadata))
+            if len(results) == top_k:
+                break
+        return results
 
 
 _STOP_WORDS = {
@@ -235,12 +276,29 @@ _STOP_WORDS = {
 
 
 def _terms(text: str) -> list[str]:
-    return [term for term in re.findall(r"[a-z0-9]{2,}", text.lower()) if term not in _STOP_WORDS]
+    return [
+        _normalize_term(term)
+        for term in re.findall(r"[a-z0-9]{2,}", text.lower())
+        if term not in _STOP_WORDS
+    ]
+
+
+def _normalize_term(term: str) -> str:
+    if len(term) > 5 and term.endswith("ies"):
+        return term[:-3] + "y"
+    if len(term) > 5 and term.endswith("ing"):
+        return term[:-3]
+    if len(term) > 4 and term.endswith("es"):
+        return term[:-2]
+    if len(term) > 4 and term.endswith("s"):
+        return term[:-1]
+    return term
 
 
 class KnowledgeRetriever:
     def __init__(self, knowledge_root: Path | None = None, search_client: AzureSearchClient | None = None) -> None:
-        root = knowledge_root or Path("data/knowledge_base")
+        repository_root = Path(__file__).resolve().parents[2]
+        root = knowledge_root or repository_root / "data" / "knowledge_base"
         self.knowledge_root = root
         use_persistent_store = knowledge_root is None
         self.search_client = search_client
@@ -251,7 +309,7 @@ class KnowledgeRetriever:
         if use_persistent_store and settings.vector_store_backend.lower() in {"chroma", "chromadb", "faiss"}:
             try:
                 self.vector_store = ChromaFaissVectorStore()
-            except RuntimeError:
+            except Exception:
                 self.vector_store = None
         self.embedding_provider: OpenAIEmbeddingProvider | None = None
         if self.vector_store is not None and settings.openai_api_key:
@@ -292,9 +350,13 @@ class KnowledgeRetriever:
         if self.vector_store is not None:
             if self.embedding_provider is None:
                 raise RuntimeError("OPENAI_API_KEY is required to write ChromaDB embeddings")
-            embeddings = self.embedding_provider.embed_many([chunk.content for chunk in chunks])
-            self.vector_store.write_chunks(chunks, embeddings)
-            return
+            try:
+                embeddings = self.embedding_provider.embed_many([chunk.content for chunk in chunks])
+            except httpx.HTTPError:
+                self.vector_store = None
+            else:
+                self.vector_store.write_chunks(chunks, embeddings)
+                return
 
         self.chunk_store_path.parent.mkdir(parents=True, exist_ok=True)
         payload = [
@@ -319,10 +381,12 @@ class KnowledgeRetriever:
     def search(self, query: str, top_k: int = 5, metadata_filter: dict[str, str] | None = None) -> list[RetrievedChunk]:
         if not query.strip():
             return []
+        analysis = analyze_retrieval_query(query)
+        retrieval_query = str(analysis["expanded_query"])
         semantic_results: list[RetrievedChunk] = []
         if self.vector_store is not None and self.embedding_provider is not None:
             try:
-                semantic_results = self.vector_store.search(self.embedding_provider.embed(query), top_k * 2)
+                semantic_results = self.vector_store.search(self.embedding_provider.embed(retrieval_query), top_k * 2)
             except Exception:
                 pass
         elif self.search_client is not None:
@@ -331,7 +395,7 @@ class KnowledgeRetriever:
             except Exception:
                 pass
 
-        lexical_results = self.local.search(query, top_k * 2)
+        lexical_results = self.local.search(retrieval_query, top_k * 2)
         results = self._fuse_results(semantic_results, lexical_results) if semantic_results else lexical_results
         if metadata_filter:
             results = [

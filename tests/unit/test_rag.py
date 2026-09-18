@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from backend.knowledge.loaders import chunk_document, discover_documents, load_text
-from backend.knowledge.retriever import KnowledgeRetriever
+from backend.knowledge.retriever import KnowledgeRetriever, analyze_retrieval_query
 from backend.orchestrator.supervisor import synthesize_response
 
 
@@ -17,6 +17,14 @@ def test_chunk_document_preserves_content_and_creates_stable_ids(tmp_path: Path)
     assert "Customer verification" in first[0].content
 
 
+def test_retrieval_query_analysis_expands_domain_concepts() -> None:
+    result = analyze_retrieval_query("What are the rules of retail lending?")
+
+    assert "retail lending" in result["concepts"]
+    assert "mortgage" in result["expanded_query"]
+    assert "eligibility" in result["expanded_query"]
+
+
 def test_local_rag_returns_relevant_citation(tmp_path: Path) -> None:
     knowledge = tmp_path / "knowledge"
     knowledge.mkdir()
@@ -30,6 +38,34 @@ def test_local_rag_returns_relevant_citation(tmp_path: Path) -> None:
     assert len(results) == 1
     assert results[0].source.endswith("verification.md")
     assert results[0].citation.startswith("[")
+
+
+def test_local_rag_normalizes_plural_query_terms(tmp_path: Path) -> None:
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    (knowledge / "api-contracts.md").write_text(
+        "Approved API workspace endpoints and response contracts.", encoding="utf-8"
+    )
+
+    results = KnowledgeRetriever(knowledge).search("What are the API contracts?")
+
+    assert len(results) == 1
+    assert results[0].source.endswith("api-contracts.md")
+
+
+def test_local_rag_prefers_matching_policy_phrase(tmp_path: Path) -> None:
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    (knowledge / "customer-verification-policy.md").write_text(
+        "Customer verification requires two approved identity checks.", encoding="utf-8"
+    )
+    (knowledge / "broad-notes.md").write_text(
+        "Customer service teams verify account requests and review requirements.", encoding="utf-8"
+    )
+
+    results = KnowledgeRetriever(knowledge).search("What are the customer verification requirements?")
+
+    assert results[0].source.endswith("customer-verification-policy.md")
 
 
 def test_retriever_uses_knowledge_root_specific_chunk_store(tmp_path: Path) -> None:

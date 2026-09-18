@@ -3,7 +3,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.routes import chat, dashboard, documents, email, knowledge
+from backend.app.api.routes import chat, dashboard, documents, email, knowledge, observability
 from backend.app.config import settings
 from backend.app.middleware import RequestContextMiddleware, unhandled_exception_handler
 
@@ -22,6 +22,7 @@ app.include_router(dashboard.router, prefix="/api/v1")
 app.include_router(email.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")
 app.include_router(knowledge.router, prefix="/api/v1")
+app.include_router(observability.router, prefix="/api/v1")
 
 
 @app.get("/", tags=["system"])

@@ -1268,6 +1268,20 @@ export function ChatWorkspace() {
               </div>
             </div>
 
+            <section className="dashboard-observability" aria-label="AI observability">
+              <div>
+                <p className="dashboard-label">AI quality</p>
+                <h4>Observability</h4>
+                <p>LangSmith tracking, Ragas evaluation, and guardrail validation.</p>
+              </div>
+              <div className="dashboard-observability-statuses">
+                <span><i className="status-dot active" />LangSmith</span>
+                <span><i className="status-dot neutral" />Ragas</span>
+                <span><i className="status-dot active" />Guardrails</span>
+              </div>
+              <a className="secondary-button" href="/observability">Open observability</a>
+            </section>
+
             <div className="dashboard-table-card">
               <div className="dashboard-table-header">
                 <span>My Tasks</span>
@@ -1520,7 +1534,7 @@ export function ChatWorkspace() {
                           ))}
                         </div>
                       ) : (
-                        <p className="message-text">{messageItem.text}</p>
+                        <p className="message-text preserved-line-breaks">{messageItem.text}</p>
                       )}
 
                       {selectedAgent === "email" && emailRows.length > 0 && messageItem.role === "assistant" && (
@@ -1580,8 +1594,8 @@ export function ChatWorkspace() {
                       </div>
                     )}
                     {documentSummary && (
-                      <div className="document-summary-box">
-                        <p>{documentSummary}</p>
+                        <div className="document-summary-box">
+                          <p className="preserved-line-breaks">{documentSummary}</p>
                       </div>
                     )}
                   </div>

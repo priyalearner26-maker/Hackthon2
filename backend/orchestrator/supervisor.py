@@ -2,6 +2,7 @@
 
 import re
 from typing import TypedDict
+from backend.app.config import settings
 
 from langgraph.graph import END, START, StateGraph
 
@@ -53,7 +54,11 @@ def classify_request(state: SupervisorState) -> SupervisorState:
         and any(term in message for term in ("task", "tasks", "backlog", "work item", "work items"))
     ):
         route = "jira_confluence"
-    elif any(term in message for term in ("document", "file", "policy", "policies", "contract", "verification")):
+    elif any(term in message for term in (
+        "document", "file", "policy", "policies", "contract", "verification",
+        "retail banking", "retail lending", "lending", "loan", "mortgage",
+        "eligibility", "requirements", "rules", "procedure", "procedures",
+    )):
         route = "document"
     else:
         route = "assistant"
@@ -89,6 +94,112 @@ def _summarize_passage(passage: str) -> str:
     return summary.strip()
 
 
+def _fallback_guidance(message: str, passages: list[str]) -> str:
+    query_terms = set(re.findall(r"[a-z0-9]{3,}", message.casefold()))
+    lending_query = bool(query_terms & {"lend", "lending", "loan", "mortgage", "credit"})
+    lending_terms = {"lend", "lending", "loan", "mortgage", "credit", "eligibility", "affordability"}
+    candidates: list[tuple[int, str]] = []
+    for passage in passages[:3]:
+        cleaned = _clean_passage(passage)
+        for sentence in re.split(r"(?<=[.!?])\s+", cleaned):
+            sentence = sentence.strip(" -")
+            if (
+                not sentence
+                or not (sentence[0].isupper() or sentence[0].isdigit())
+                or (not sentence.endswith((".", "!", "?")) and len(sentence) < 80)
+            ):
+                continue
+            sentence_terms = set(re.findall(r"[a-z0-9]{3,}", sentence.casefold()))
+            if lending_query and not (sentence_terms & lending_terms):
+                continue
+            score = len(query_terms & sentence_terms)
+            if any(term in sentence.casefold() for term in ("lending", "loan", "mortgage", "eligibility")):
+                score += 2
+            candidates.append((score, sentence))
+    selected: list[str] = []
+    for _score, sentence in sorted(candidates, key=lambda item: item[0], reverse=True):
+        if sentence not in selected:
+            selected.append(sentence)
+        if len(selected) == 3:
+            break
+    return "\n".join(f"- {sentence}" for sentence in selected)
+
+
+def _exact_source_guidance(message: str, passages: list[str]) -> str:
+    query_terms = set(re.findall(r"[a-z0-9]{3,}", message.casefold()))
+    candidates: list[tuple[int, str]] = []
+    for passage in passages[:5]:
+        units = re.split(r"\s+(?=-\s|`(?:GET|POST|PUT|PATCH|DELETE)\s)", _clean_passage(passage))
+        for unit in units:
+            for sentence in re.split(r"(?<=[.!?])\s+", unit):
+                sentence = sentence.strip(" -")
+                if not sentence or len(sentence.split()) < 4:
+                    continue
+                if not (sentence[0].isupper() or sentence[0].isdigit() or sentence.startswith("`")):
+                    continue
+                if not sentence.endswith((".", "!", "?")) and "`" not in sentence:
+                    continue
+                sentence_terms = set(re.findall(r"[a-z0-9]{3,}", sentence.casefold()))
+                overlap = len(query_terms & sentence_terms)
+                if overlap:
+                    candidates.append((overlap, sentence))
+
+    selected: list[str] = []
+    for _score, sentence in sorted(candidates, key=lambda item: item[0], reverse=True):
+        if sentence not in selected:
+            selected.append(sentence)
+        if len(selected) == 3:
+            break
+    return "\n".join(f"- {sentence}" for sentence in selected)
+
+
+def _concise_guidance(message: str, passages: list[str]) -> str:
+    source_text = "\n\n".join(_clean_passage(passage) for passage in passages[:3])
+    exact_answer = _exact_source_guidance(message, passages)
+    if exact_answer:
+        return exact_answer
+    fallback = _fallback_guidance(message, passages)
+    if not settings.llm_api_key or not settings.llm_model:
+        return fallback
+
+    try:
+        from langchain_core.output_parsers import StrOutputParser
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_openai import ChatOpenAI
+
+        prompt = ChatPromptTemplate.from_template(
+            """You answer bank employee questions using only the approved passages below.
+Return at most 3 concise bullet points, one per line, each starting with '- '.
+Answer the question directly. Do not repeat the question, mention retrieval, or add unsupported details.
+Preserve exact numbers, dates, names, thresholds, and required steps from the approved passages.
+If the passages do not contain the answer, return exactly: "The information you are searching for is not available in the approved knowledge base. Please contact the relevant team for further clarification."
+
+Question: {question}
+
+Approved passages:
+{passages}"""
+        )
+        chain = prompt | ChatOpenAI(
+            api_key=settings.llm_api_key,
+            base_url=(settings.openai_base_url or "https://api.openai.com/v1").rstrip("/"),
+            model=settings.llm_model,
+            max_completion_tokens=300,
+        ) | StrOutputParser()
+        answer = chain.invoke({"question": message, "passages": source_text})
+        if "not available in the approved knowledge base" in str(answer).casefold():
+            return fallback
+        bullets = [
+            re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+            for line in str(answer).splitlines()
+            if re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+        ][:3]
+        if bullets:
+            return "\n".join(f"- {bullet}" for bullet in bullets)
+    except Exception:
+        pass
+    return fallback
+
+
 def route_agent(state: SupervisorState) -> SupervisorState:
     route = state.get("route", "assistant")
     agent_map = {
@@ -117,7 +228,10 @@ def route_agent(state: SupervisorState) -> SupervisorState:
     )
 
     if route == "document" and not state.get("passages"):
-        response = "No approved policy guidance matched. Add approved documents to data/knowledge_base."
+        response = (
+            "The information you are searching for is not available in the approved knowledge base. "
+            "Please contact the relevant team for further clarification."
+        )
     elif route == "document" and state.get("passages"):
         citations = state.get("sources", [])
         citation = citations[0] if citations else ""
@@ -128,7 +242,7 @@ def route_agent(state: SupervisorState) -> SupervisorState:
         ]
         if not primary_passages:
             primary_passages = [_clean_passage(state["passages"][0])]
-        response = "Approved policy guidance:\n" + "\n\n".join(primary_passages[:2])
+        response = _concise_guidance(state["message"], primary_passages)
 
     return {
         "agent_name": agent.name,

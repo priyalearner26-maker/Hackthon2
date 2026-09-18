@@ -24,17 +24,22 @@ def test_supervisor_honors_explicit_confluence_agent_context() -> None:
     assert classify_request({"message": "Find the onboarding decision", "agent": "confluence"})["route"] == "confluence"
 
 
+def test_supervisor_routes_retail_lending_questions_to_knowledge() -> None:
+    assert classify_request({"message": "What are the rules of retail lending?"})["route"] == "document"
+
+
 def test_supervisor_keeps_assistant_responses_user_facing() -> None:
     result = Supervisor().handle("session-3", "what are policies for home loan")
 
     assert "assistant agent responded" not in result
     assert "Approved knowledge used" not in result
-    assert "policy" in result.lower()
+    assert "home-loan" in result.lower()
 
 
 def test_supervisor_includes_retrieved_approved_guidance() -> None:
     result = Supervisor().handle("session-4", "What are the identity checks for customer verification?")
 
-    assert "Approved policy guidance" in result
-    assert "two approved identity checks" in result
+    assert result.startswith("- ")
+    assert "Source:" not in result
+    assert any(term in result.lower() for term in ("identity", "passcode", "verification", "account detail"))
     assert "one-time passcode" in result

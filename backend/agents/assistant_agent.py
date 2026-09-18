@@ -17,6 +17,16 @@ class AssistantAgent(Agent):
         message = context.message.strip() or "Please introduce yourself."
         try:
             return self._call_llm(message)
+        except httpx.ConnectError:
+            return (
+                "AskBank cannot connect to the language model provider. "
+                "Check OPENAI_BASE_URL and your network, VPN, or firewall settings."
+            )
+        except httpx.HTTPStatusError:
+            return (
+                "AskBank reached the language model provider, but it rejected the request. "
+                "Check OPENAI_API_KEY and LLM_MODEL in .env."
+            )
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             return (
                 "AskBank is unable to reach the language model right now. "
@@ -66,8 +76,7 @@ class AssistantAgent(Agent):
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": message},
                     ],
-                    "temperature": 0.3,
-                    "max_tokens": 700 if expanded else 300,
+                    "max_completion_tokens": 700 if expanded else 300,
                 },
                 timeout=60.0,
             )

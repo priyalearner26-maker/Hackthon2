@@ -99,6 +99,20 @@ python scripts/ingest.py
 
 Without `OPENAI_API_KEY`, development falls back to local chunks and lexical retrieval; it does not claim to provide vector similarity search.
 
+### RAG evaluation
+
+Ragas evaluation is opt-in and uses the sample dataset at `data/rag_eval_dataset.jsonl`:
+
+```powershell
+python -m venv .venv-rag-eval
+.venv-rag-eval\Scripts\activate
+python -m pip install -r requirements-eval.txt
+python scripts/evaluate_rag.py
+```
+
+Add evaluation cases as JSONL records with `user_input`, `reference`, and `reference_contexts`.
+The evaluator reports context precision, context recall, faithfulness, and response relevancy.
+
 ## Architecture diagram
 
 Regenerate the diagram after architecture changes:

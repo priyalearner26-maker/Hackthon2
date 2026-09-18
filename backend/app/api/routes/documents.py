@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from backend.documents import analyze_document, validate_filename
+from backend.documents import analyze_document, summarize_with_langchain, validate_filename
 from backend.knowledge.loaders import load_text
 from backend.knowledge.retriever import KnowledgeRetriever
 
@@ -34,6 +34,7 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
     try:
         text = load_text(path)
         analysis = analyze_document(file.filename, text)
+        analysis["summary"] = summarize_with_langchain(text, analysis["summary"])
         KnowledgeRetriever().rebuild_store()
         return {"status": "indexed", "document_id": path.stem, "analysis": analysis}
     except RuntimeError as exc:

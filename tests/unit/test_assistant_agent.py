@@ -36,7 +36,7 @@ def test_assistant_calls_openai_chat_with_concise_prompt(monkeypatch) -> None:
     assert result == "A concise banking answer."
     assert request["url"] == "https://api.openai.com/v1/chat/completions"
     assert request["json"]["model"] == "gpt-4o-mini"
-    assert request["json"]["max_tokens"] == 300
+    assert request["json"]["max_completion_tokens"] == 300
     assert "under 200 words" in request["json"]["messages"][0]["content"]
 
 
@@ -61,7 +61,7 @@ def test_assistant_allows_more_detail_when_requested(monkeypatch) -> None:
 
     AssistantAgent().run(SimpleNamespace(message="Explain savings accounts in more detail"))
 
-    assert request["json"]["max_tokens"] == 700
+    assert request["json"]["max_completion_tokens"] == 700
     assert "under 500 words" in request["json"]["messages"][0]["content"]
 
 

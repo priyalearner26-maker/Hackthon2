@@ -14,6 +14,7 @@ def test_document_analysis_extracts_summary_actions_and_keywords() -> None:
     assert result["filename"] == "policy.md"
     assert result["word_count"] > 0
     assert "Customer verification policy." in result["summary"]
+    assert result["summary"].startswith("- ")
     assert len(result["action_items"]) == 2
     assert "verification" in result["keywords"]
 
