@@ -515,6 +515,7 @@ export function ChatWorkspace() {
 
   const activeAgent = agents.find((agent) => agent.id === selectedAgent) ?? agents[0];
   const baseDetail = detailPanelsByAgent[selectedAgent] ?? detailPanelsByAgent.email;
+  const hasSelectedConfluencePage = Boolean(confluenceDetails || confluencePageContent.trim());
   const activeDetail = selectedAgent === "email"
     ? selectedEmail
       ? {
@@ -1107,6 +1108,32 @@ export function ChatWorkspace() {
     const body = window.prompt("Replacement page content:");
     if (!body?.trim()) return;
     void submitMessage(`Update Confluence page ${pageId.trim()}: ${body.trim()}`);
+  }
+
+  async function createJiraStoryFromConfluence() {
+    if (!hasSelectedConfluencePage) {
+      setStatusMessage("Select a Confluence page before creating a Jira story.");
+      return;
+    }
+    const title = confluenceDetails?.title || "Selected Confluence page";
+    const summary = `Review Confluence page: ${title}`.slice(0, 180);
+    const context = confluencePageContent.replace(/\s+/g, " ").trim().slice(0, 5000);
+    const request = context
+      ? `Create a story in Jira: ${summary} | Context: ${context}`
+      : `Create a story in Jira: ${summary}`;
+    setIsLoading(true);
+    try {
+      const result = await sendMessage("confluence-jira-session", request, "jira");
+      setMessages((current) => [
+        ...current,
+        { id: Date.now(), role: "assistant", text: result.answer, time: getTimestamp() },
+      ]);
+      setStatusMessage(result.answer);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Unable to create the Jira story.");
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   function handleNavClick(navId: string) {
@@ -1703,6 +1730,10 @@ export function ChatWorkspace() {
                       <PencilLine size={16} />
                       Update Page
                     </button>
+                    <button type="button" className="chip-button" onClick={() => void createJiraStoryFromConfluence()} disabled={isLoading || !hasSelectedConfluencePage}>
+                      <BriefcaseBusiness size={16} />
+                      Create Jira Story
+                    </button>
                   </>
                 ) : null}
               </div>
@@ -1775,11 +1806,11 @@ export function ChatWorkspace() {
                 <p className="summary-copy">{activeDetail.summary}</p>
               </div>
 
-              <div className="detail-card draft-card">
+              {(selectedAgent !== "email" || emailDraftLines.length > 0) && <div className="detail-card draft-card">
                 <div className="detail-header">
                   <div className="detail-heading">
                     <PencilLine size={16} />
-                    <span>Suggested Response (Draft)</span>
+                    <span>{selectedAgent === "confluence" ? "Suggested Confluence Page" : "Suggested Response (Draft)"}</span>
                   </div>
                   <button type="button" className="utility-button" aria-label="Copy response" onClick={copyDraft}>
                     <Copy size={15} />
@@ -1811,7 +1842,7 @@ export function ChatWorkspace() {
                       : selectedAgent === "meeting" ? "Open Microsoft Teams" : selectedAgent === "confluence" ? "Update selected page" : `Send via ${activeAgent.name}`}
                   </button>
                 </div>
-              </div>
+              </div>}
             </aside>}
           </div>
         )}

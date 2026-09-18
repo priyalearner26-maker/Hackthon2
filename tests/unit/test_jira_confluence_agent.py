@@ -186,6 +186,41 @@ def test_jira_agent_analyzes_story_text() -> None:
     assert "Expected behavior: Defined" in result
 
 
+def test_jira_agent_creates_story_from_confluence_context(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        jira_base_url="https://example.atlassian.net",
+        jira_email="user@example.com",
+        jira_api_token="token",
+        jira_project_key="DEMO",
+        llm_api_key="",
+        llm_provider="openai",
+        openai_base_url="https://example.openai.com/v1",
+        llm_model="gpt-4o-mini",
+    )
+    request: dict[str, object] = {}
+
+    def fake_post(url: str, **kwargs: object) -> CreatedResponse:
+        request["url"] = url
+        request.update(kwargs)
+        return CreatedResponse()
+
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.settings", settings)
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.post", fake_post)
+
+    result = JiraConfluenceAgent().run(
+        SimpleNamespace(
+            message="Create a story in Jira: Review Confluence page: Customer Verification | Context: Employees must complete two approved identity checks. Use a one-time passcode.",
+            agent="jira",
+        )
+    )
+
+    assert request["url"] == "https://example.atlassian.net/rest/api/3/issue"
+    assert request["json"]["fields"]["issuetype"] == {"name": "Story"}
+    assert "Customer Verification" in request["json"]["fields"]["summary"]
+    assert "one-time passcode" in str(request["json"]["fields"]["description"]).lower()
+    assert "DEMO-42" in result
+
+
 def test_jira_agent_fetches_confluence_page_content(monkeypatch) -> None:
     settings = SimpleNamespace(
         jira_base_url="https://example.atlassian.net",
@@ -325,6 +360,8 @@ def test_confluence_agent_summarizes_with_grounded_llm(monkeypatch) -> None:
     assert result == "The page highlights workspace insights. [page 163981]"
     assert request["url"] == "https://api.openai.com/v1/chat/completions"
     assert "Mission control" in request["json"]["messages"][1]["content"]
+    assert request["json"]["max_completion_tokens"] == 500
+    assert "temperature" not in request["json"]
 
 
 def test_jira_query_uses_valid_summary_and_description_search() -> None:

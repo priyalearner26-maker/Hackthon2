@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -132,6 +133,9 @@ class JiraConfluenceAgent(Agent):
                 "body": {"storage": {"value": f"<p>{self._escape_html(body)}</p>", "representation": "storage"}},
             }
 
+        requested_summary, context = self._split_story_context(summary)
+        story_summary, story_description = self._format_story_with_llm(requested_summary, context)
+
         try:
             response = getattr(httpx, method)(
                 url,
@@ -166,6 +170,131 @@ class JiraConfluenceAgent(Agent):
     @staticmethod
     def _escape_html(value: str) -> str:
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    @staticmethod
+    def _split_story_context(raw_text: str) -> tuple[str, str]:
+        cleaned = " ".join(raw_text.split()).strip()
+        if not cleaned:
+            return "Review requested work item", ""
+
+        if "|" in cleaned:
+            before, after = cleaned.split("|", 1)
+            summary = before.strip()
+            context = after.strip()
+            if context.lower().startswith("context:"):
+                context = context.split(":", 1)[1].strip()
+            return summary.strip() or "Review requested work item", context.strip()
+
+        if "context:" in cleaned.lower():
+            body, context = re.split(r"\bcontext\s*:\s*", cleaned, maxsplit=1, flags=re.IGNORECASE)
+            return body.strip() or "Review requested work item", context.strip()
+
+        return cleaned, ""
+
+    @classmethod
+    def _format_story_with_llm(cls, summary: str, context: str) -> tuple[str, str]:
+        base_summary = " ".join(summary.split()).strip() or "Review requested work item"
+        base_context = " ".join(context.split()).strip()
+
+        if not base_context and not getattr(settings, "llm_api_key", ""):
+            cleaned_summary = base_summary.replace("Review Confluence page:", "").strip()
+            if not cleaned_summary:
+                cleaned_summary = "Review requested work item"
+            return cleaned_summary[:120], f"Summary: {cleaned_summary}\n\nRequested action: assess the page content and prepare the follow-up work."
+
+        api_key = getattr(settings, "llm_api_key", "") or getattr(settings, "openai_api_key", "")
+        provider = getattr(settings, "llm_provider", "openai").casefold().strip()
+        if not api_key and provider != "ollama":
+            return cls._fallback_story_text(base_summary, base_context)
+
+        prompt = (
+            "Convert the Confluence page context into a concise Jira story title and a meaningful description.\n\n"
+            f"Requested summary: {base_summary}\n\n"
+            f"Page context: {base_context[:6000]}\n\n"
+            "Output valid JSON with exactly two keys: 'summary' and 'description'.\n"
+            "- summary: a short issue title, under 120 characters\n"
+            "- description: a clear Jira-ready description with 2 to 4 sentences or bullets, grounded in the supplied context only"
+        )
+
+        try:
+            if provider == "ollama":
+                response = httpx.post(
+                    f"{settings.ollama_base_url.rstrip('/')}/api/chat",
+                    json={
+                        "model": settings.ollama_model,
+                        "stream": False,
+                        "messages": [
+                            {"role": "system", "content": "You are a Jira planning assistant. Return JSON only."},
+                            {"role": "user", "content": prompt},
+                        ],
+                    },
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                content = str(response.json()["message"]["content"]).strip()
+                answer = guard_output(content)
+                track_llm_run(
+                    "jira.story.format",
+                    provider="ollama",
+                    model=settings.ollama_model,
+                    input_text=prompt,
+                    output_text=answer,
+                )
+            else:
+                base_url = (getattr(settings, "openai_base_url", "") or "https://api.openai.com/v1").rstrip("/")
+                response = httpx.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": getattr(settings, "llm_model", "gpt-4o-mini") or "gpt-4o-mini",
+                        "messages": [
+                            {"role": "system", "content": "You are a Jira planning assistant. Return valid JSON with keys summary and description only."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "max_completion_tokens": 300,
+                    },
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                content = str(response.json()["choices"][0]["message"]["content"]).strip()
+                answer = guard_output(content)
+                track_llm_run(
+                    "jira.story.format",
+                    provider="openai",
+                    model=getattr(settings, "llm_model", "gpt-4o-mini"),
+                    input_text=prompt,
+                    output_text=answer,
+                )
+
+            json_text = answer.strip()
+            if json_text.startswith("```"):
+                json_text = re.sub(r"^```(?:json)?\s*", "", json_text, flags=re.IGNORECASE)
+                json_text = re.sub(r"\s*```$", "", json_text)
+            parsed = json.loads(json_text)
+            if isinstance(parsed, dict):
+                summary_value = str(parsed.get("summary") or base_summary).strip()
+                description_value = str(parsed.get("description") or base_context or base_summary).strip()
+                if not summary_value:
+                    summary_value = base_summary
+                if not description_value:
+                    description_value = base_context or f"Review and validate the requested work based on: {base_summary}"
+                return summary_value[:120], description_value[:4000]
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+        return cls._fallback_story_text(base_summary, base_context)
+
+    @staticmethod
+    def _fallback_story_text(summary: str, context: str) -> tuple[str, str]:
+        cleaned_summary = summary.replace("Review Confluence page:", "").strip()
+        if not cleaned_summary:
+            cleaned_summary = "Review requested work item"
+        cleaned_summary = " ".join(cleaned_summary.split())[:120]
+        description = context.strip() or cleaned_summary
+        description = description[:4000]
+        if not description:
+            description = f"Review and validate the requested work based on the selected Confluence page: {cleaned_summary}"
+        return cleaned_summary, description
 
     @staticmethod
     def _format_knowledge_context(passages: list[Any], sources: list[str] | None = None) -> str:
@@ -219,8 +348,7 @@ class JiraConfluenceAgent(Agent):
                 json={
                     "model": getattr(settings, "llm_model", "gpt-4o-mini") or "gpt-4o-mini",
                     "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                    "max_tokens": 500,
+                    "max_completion_tokens": 500,
                 },
                 timeout=60.0,
             )
@@ -269,7 +397,7 @@ class JiraConfluenceAgent(Agent):
     @staticmethod
     def _parse_create_request(query: str) -> tuple[str, str] | None:
         match = re.match(
-            r"^\s*(?:please\s+)?create\s+(?:a\s+)?(task|user\s+story|story)"
+            r"^\s*(?:please\s+)?create\s+(?:a\s+)?(?:jira\s+)?(task|user\s+story|story)"
             r"(?:\s+in\s+jira)?\s*[:\-]?\s*(.+?)\s*$",
             query,
             flags=re.IGNORECASE,
@@ -285,6 +413,9 @@ class JiraConfluenceAgent(Agent):
         if not settings.jira_project_key:
             return "Jira creation is unavailable because JIRA_PROJECT_KEY is not configured."
 
+        requested_summary, context = self._split_story_context(summary)
+        story_summary, story_description = self._format_story_with_llm(requested_summary, context)
+
         try:
             response = httpx.post(
                 f"{settings.jira_base_url.rstrip('/')}/rest/api/3/issue",
@@ -293,14 +424,14 @@ class JiraConfluenceAgent(Agent):
                 json={
                     "fields": {
                         "project": {"key": settings.jira_project_key},
-                        "summary": summary,
+                        "summary": story_summary,
                         "description": {
                             "type": "doc",
                             "version": 1,
                             "content": [
                                 {
                                     "type": "paragraph",
-                                    "content": [{"type": "text", "text": summary}],
+                                    "content": [{"type": "text", "text": story_description}],
                                 }
                             ],
                         },
@@ -312,7 +443,7 @@ class JiraConfluenceAgent(Agent):
             response.raise_for_status()
             payload = response.json()
             issue_key = payload.get("key", "the new issue")
-            return f"Jira {issue_type} created successfully: {issue_key} - {summary}"
+            return f"Jira {issue_type} created successfully: {issue_key} - {story_summary}"
         except httpx.HTTPStatusError as error:
             return f"Jira issue creation failed (HTTP {error.response.status_code})."
         except httpx.HTTPError:
