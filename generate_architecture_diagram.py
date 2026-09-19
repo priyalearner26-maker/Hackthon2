@@ -165,6 +165,23 @@ for idx, item in enumerate(agent_items):
 # External services header style alignment
 add_box(16.1, 5.5, 1.8, 4.4, "External Services\n& Integrations", "", fc="#dfeaf7", ec="#515ee4", title_size=11)
 
+# Independent browser-test application. It is deliberately shown outside the
+# FastAPI and Next.js application path to make the deployment boundary explicit.
+add_box(
+    12.7,
+    3.95,
+    3.1,
+    1.05,
+    "Playwright Test Command",
+    "Independent Vite UI + Express API\nSocket.IO events • browser matrix • Allure artifacts",
+    fc="#d9f2e3",
+    ec="#23866a",
+    title_color="#14543f",
+    body_color="#245344",
+    title_size=11,
+    body_size=7.5,
+)
+
 # External services contents
 services = [
     "Classic Outlook / Graph Mail",
@@ -215,6 +232,7 @@ add_arrow((8.7, 2.1), (8.7, 1.1), text="documents", color="#334155", lw=1.5, sty
 add_arrow((11.6, 2.1), (11.6, 1.1), text="vector index", color="#334155", lw=1.5, style="--")
 add_arrow((5.0, 5.5), (3.4, 5.5), text="API response", color="#334155", lw=1.5)
 add_arrow((2.4, 5.2), (3.4, 5.2), text="", color="#334155", lw=1.5)
+add_arrow((2.8, 4.45), (12.7, 4.45), text="independent test execution boundary", color="#23866a", lw=1.2, style="--")
 
 # frame for top quality feel
 frame = FancyBboxPatch((0.15, 0.05), 17.7, 10.7, boxstyle="round,pad=0.02,rounding_size=0.18", linewidth=1.2, edgecolor="#7eb1ce", facecolor="none")

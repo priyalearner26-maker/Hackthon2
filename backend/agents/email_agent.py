@@ -421,7 +421,10 @@ class EmailAgent(Agent):
             if "action item" in prompt.lower():
                 return f"No {scope} or action items were found."
             if "draft" in prompt.lower() or "reply" in prompt.lower():
-                return f"No {scope} are available to draft a reply for."
+                return (
+                    "MailMate could not access the mailbox. Configure Microsoft Graph and sign in, or open the "
+                    "local Outlook desktop profile before trying again."
+                )
             return f"No {scope} were found."
 
         if "high priority" in prompt_lower or "only show high" in prompt_lower:
@@ -484,7 +487,10 @@ class EmailAgent(Agent):
                 if any(value and str(value).lower() in requested for value in (item.get("subject"), item.get("sender")))
             ]
             if not matching_emails:
-                return "No unread email is available to draft a reply for."
+                return (
+                    "MailMate could not access the mailbox. Configure Microsoft Graph and sign in, or open the "
+                    "local Outlook desktop profile before trying again."
+                )
 
             email = matching_emails[0]
             sender = email.get("sender", "there")

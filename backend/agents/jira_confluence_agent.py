@@ -103,8 +103,11 @@ class JiraConfluenceAgent(Agent):
 
     def _write_confluence_page(self, action: str, title_or_body: str, body_or_page_id: str | None) -> str:
         base_url = (getattr(settings, "confluence_base_url", "") or "").rstrip("/")
+        space_key = getattr(settings, "confluence_space_key", "")
         if not base_url or not settings.jira_email or not settings.jira_api_token:
             return "Confluence page changes are unavailable. Configure CONFLUENCE_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN."
+        if action == "create" and not space_key:
+            return "Confluence page creation is unavailable. Configure CONFLUENCE_SPACE_KEY."
 
         if action == "create":
             title, body, page_id = title_or_body, body_or_page_id or "", None
@@ -113,7 +116,7 @@ class JiraConfluenceAgent(Agent):
             payload = {
                 "type": "page",
                 "title": title,
-                "space": {"key": getattr(settings, "confluence_space_key", "")},
+                "space": {"key": space_key},
                 "body": {"storage": {"value": f"<p>{self._escape_html(body)}</p>", "representation": "storage"}},
             }
         else:
@@ -133,9 +136,6 @@ class JiraConfluenceAgent(Agent):
                 "body": {"storage": {"value": f"<p>{self._escape_html(body)}</p>", "representation": "storage"}},
             }
 
-        requested_summary, context = self._split_story_context(summary)
-        story_summary, story_description = self._format_story_with_llm(requested_summary, context)
-
         try:
             response = getattr(httpx, method)(
                 url,
@@ -146,7 +146,13 @@ class JiraConfluenceAgent(Agent):
             )
             response.raise_for_status()
             result = response.json()
-            return f"Confluence page {action}d successfully: {result.get('id', page_id or 'new page')} - {payload['title']}"
+            persisted_page_id = str(result.get("id") or page_id or "").strip()
+            if not persisted_page_id or not self._get_confluence_page(persisted_page_id):
+                return f"Confluence page {action} could not be verified after the write."
+            return (
+                f"Confluence page {action}d successfully: {persisted_page_id} - {payload['title']}\n"
+                f"Open page: {base_url}/pages/{persisted_page_id}"
+            )
         except httpx.HTTPStatusError as error:
             return f"Confluence page {action} failed (HTTP {error.response.status_code})."
         except httpx.HTTPError:
@@ -442,8 +448,21 @@ class JiraConfluenceAgent(Agent):
             )
             response.raise_for_status()
             payload = response.json()
-            issue_key = payload.get("key", "the new issue")
-            return f"Jira {issue_type} created successfully: {issue_key} - {story_summary}"
+            issue_key = str(payload.get("key") or "").strip()
+            if not issue_key:
+                return "Jira issue creation could not be verified because Jira returned no issue key."
+            verification = httpx.get(
+                f"{settings.jira_base_url.rstrip('/')}/rest/api/3/issue/{issue_key}",
+                params={"fields": "summary,issuetype"},
+                headers={"Accept": "application/json"},
+                auth=(settings.jira_email, settings.jira_api_token),
+                timeout=10.0,
+            )
+            verification.raise_for_status()
+            return (
+                f"Jira {issue_type} created successfully: {issue_key} - {story_summary}\n"
+                f"Open issue: {settings.jira_base_url.rstrip('/')}/browse/{issue_key}"
+            )
         except httpx.HTTPStatusError as error:
             return f"Jira issue creation failed (HTTP {error.response.status_code})."
         except httpx.HTTPError:
@@ -469,6 +488,24 @@ class JiraConfluenceAgent(Agent):
                 response.raise_for_status()
                 fields = response.json().get("fields", {})
                 story_text = f"{fields.get('summary', '')} {self._flatten_description(fields.get('description'))}"
+            except httpx.HTTPStatusError as error:
+                issue_key = issue_key_match.group(1)
+                if error.response.status_code == 404:
+                    configured_project = getattr(settings, "jira_project_key", "")
+                    project_hint = f" The configured Jira project is {configured_project}; use a key from that project." if configured_project else ""
+                    inline_text = re.sub(
+                        rf"\b{re.escape(issue_key)}\b\s*[:\-]?\s*",
+                        "",
+                        query,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    ).strip()
+                    if inline_text and inline_text.casefold() not in {"analyze story", "analyse story"}:
+                        return self._format_story_analysis(inline_text)
+                    return f"Jira story analysis could not find {issue_key} or you do not have permission to view it.{project_hint}"
+                if error.response.status_code in {401, 403}:
+                    return f"Jira story analysis cannot access {issue_key}. Verify the Jira account has permission to view this issue."
+                return f"Jira story analysis could not load {issue_key} (HTTP {error.response.status_code})."
             except httpx.HTTPError:
                 return f"Jira story analysis failed because {issue_key_match.group(1)} could not be loaded."
         elif issue_key_match:

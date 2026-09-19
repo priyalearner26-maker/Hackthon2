@@ -5,6 +5,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from backend.app.config import settings
+from backend.agents.jira_confluence_agent import JiraConfluenceAgent
 from backend.knowledge.loaders import ingest_confluence_page
 from backend.knowledge.retriever import KnowledgeRetriever
 
@@ -19,6 +20,11 @@ class KnowledgeSearchRequest(BaseModel):
 
 class ConfluenceIngestRequest(BaseModel):
     page_url: str = Field(min_length=1)
+
+
+class ConfluencePageCreateRequest(BaseModel):
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
 
 
 @router.post("/search")
@@ -58,3 +64,12 @@ def ingest_knowledge_from_confluence(request: ConfluenceIngestRequest) -> dict[s
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     return {"status": "indexed", "source": str(path), "chunks": len(chunks)}
+
+
+@router.post("/confluence/pages")
+def create_confluence_page(request: ConfluencePageCreateRequest) -> dict[str, str]:
+    result = JiraConfluenceAgent()._write_confluence_page("create", request.title.strip(), request.content.strip())
+    if not result.startswith("Confluence page created successfully:"):
+        raise HTTPException(status_code=502, detail=result)
+    page_url = result.split("Open page: ", 1)[-1].strip()
+    return {"status": "created", "message": result, "url": page_url}

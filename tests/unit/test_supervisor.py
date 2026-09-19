@@ -43,3 +43,11 @@ def test_supervisor_includes_retrieved_approved_guidance() -> None:
     assert "Source:" not in result
     assert any(term in result.lower() for term in ("identity", "passcode", "verification", "account detail"))
     assert "one-time passcode" in result
+
+
+def test_supervisor_answers_retail_banking_typo_with_grounded_guidance() -> None:
+    result = Supervisor().handle("session-5", "what is reail banking?")
+
+    text = result.lower()
+    assert "retail banking" in text
+    assert "not available in the approved knowledge base" not in text

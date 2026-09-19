@@ -19,7 +19,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import { getDashboardSummary, getEmailMessages, sendEmail, sendMessage, uploadDocument } from "../lib/api";
+import { createConfluencePage, createJiraIssue, createJiraTestCases, generateJiraTestCases, getDashboardSummary, getEmailMessages, getJiraStory, JiraTestCase, sendEmail, sendMessage, uploadDocument } from "../lib/api";
 
 type MessageRole = "assistant" | "user";
 type AgentId = "email" | "meeting" | "jira" | "confluence" | "document" | "knowledge" | "assistant";
@@ -32,6 +32,14 @@ type Message = {
   time: string;
 };
 
+type AgentNotification = {
+  id: number;
+  agentId: AgentId;
+  message: string;
+  time: string;
+  read: boolean;
+};
+
 type JiraIssue = {
   key: string;
   summary: string;
@@ -39,6 +47,9 @@ type JiraIssue = {
   status: string;
   assignee: string;
   updated: string;
+  issueType?: string;
+  description?: string;
+  acceptanceCriteria?: string;
 };
 
 type EmailRow = {
@@ -422,6 +433,32 @@ function buildConfluenceSummary(content: string): string {
   return `${words.slice(0, 220).join(" ")}...`;
 }
 
+function truncateToRatio(content: string, ratio = 0.4): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+
+  const targetLength = Math.max(120, Math.round(normalized.length * ratio));
+  if (normalized.length <= targetLength) return normalized;
+
+  return `${normalized.slice(0, targetLength).trim()}...`;
+}
+
+function buildKnowledgeSummary(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) return "The knowledge base did not return enough policy detail to summarize yet.";
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+(?=[A-Z0-9"(])/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  if (sentences.length <= 5) {
+    return sentences.length ? sentences.join(" ") : normalized;
+  }
+
+  return sentences.slice(0, 8).join(" ");
+}
+
 function buildConfluenceActionItems(content: string): string[] {
   const items = content
     .split(/(?<=[.!?])\s+|\s{2,}/)
@@ -478,6 +515,9 @@ export function ChatWorkspace() {
   const [statusMessage, setStatusMessage] = useState("");
   const [documentSummary, setDocumentSummary] = useState("");
   const [jiraIssues, setJiraIssues] = useState<JiraIssue[]>([]);
+  const [selectedJiraIssue, setSelectedJiraIssue] = useState<JiraIssue | null>(null);
+  const [jiraTestCases, setJiraTestCases] = useState<JiraTestCase[]>([]);
+  const [jiraTestCaseStoryKey, setJiraTestCaseStoryKey] = useState("");
   const [documentProcessing, setDocumentProcessing] = useState(false);
   const [documentProcessingStage, setDocumentProcessingStage] = useState(0);
   const [dashboardMetrics, setDashboardMetrics] = useState({
@@ -485,8 +525,28 @@ export function ChatWorkspace() {
     knowledge_documents: 0,
     integration_status: {} as Record<string, boolean>,
   });
+  const [notifications, setNotifications] = useState<AgentNotification[]>([
+    { id: 1, agentId: "assistant", message: "Workspace is ready for agent updates.", time: getTimestamp(), read: false },
+  ]);
   const dashboardLoadStarted = useRef(false);
   const mailboxLoad = useRef<Promise<void> | null>(null);
+
+  const unreadNotifications = notifications.filter((notification) => !notification.read).length;
+
+  function addNotification(agentId: AgentId, message: string) {
+    setNotifications((current) => [{
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      agentId,
+      message,
+      time: getTimestamp(),
+      read: false,
+    }, ...current].slice(0, 8));
+  }
+
+  function toggleNotifications() {
+    setNotificationsOpen((current) => !current);
+    setNotifications((current) => current.map((notification) => ({ ...notification, read: true })));
+  }
 
   useEffect(() => {
     if (dashboardLoadStarted.current) return;
@@ -498,6 +558,7 @@ export function ChatWorkspace() {
         knowledge_documents: summary.knowledge_documents,
         integration_status: summary.integration_status,
       });
+      addNotification("assistant", `Dashboard refreshed with ${summary.connected_integrations} connected integrations.`);
     }).catch(() => setStatusMessage("Dashboard metrics are temporarily unavailable."));
     void loadMailboxPreview();
     void loadDashboardAgentData();
@@ -506,15 +567,14 @@ export function ChatWorkspace() {
   useEffect(() => {
     if (!documentProcessing) return;
 
-    const stageTimer = window.setInterval(() => {
-      setDocumentProcessingStage((current) => Math.min(current + 1, documentProcessingStages.length - 1));
-    }, 1200);
-
-    return () => window.clearInterval(stageTimer);
+    setDocumentProcessingStage(documentProcessingStages.length - 1);
   }, [documentProcessing]);
 
   const activeAgent = agents.find((agent) => agent.id === selectedAgent) ?? agents[0];
   const baseDetail = detailPanelsByAgent[selectedAgent] ?? detailPanelsByAgent.email;
+  const latestKnowledgeSummary = messages
+    .filter((message) => message.role === "assistant" && message.text.trim())
+    .slice(-1)[0]?.text ?? "";
   const hasSelectedConfluencePage = Boolean(confluenceDetails || confluencePageContent.trim());
   const activeDetail = selectedAgent === "email"
     ? selectedEmail
@@ -546,7 +606,22 @@ export function ChatWorkspace() {
           actionItems: ["Select an email to view its action items."],
           draftLines: emailDraftLines.length ? emailDraftLines : ["Select an email to generate a reply draft."],
         }
-    : selectedAgent === "jira" && jiraIssues.length > 0
+    : selectedAgent === "jira" && selectedJiraIssue
+      ? {
+          ...baseDetail,
+          detailItems: [
+            { label: "Issue", value: selectedJiraIssue.key },
+            { label: "Project", value: selectedJiraIssue.project || "N/A" },
+            { label: "Status", value: selectedJiraIssue.status || "N/A" },
+            { label: "Assignee", value: selectedJiraIssue.assignee || "Unassigned" },
+            { label: "Updated", value: selectedJiraIssue.updated || "N/A" },
+            { label: "Acceptance", value: selectedJiraIssue.acceptanceCriteria || "Not explicitly provided" },
+          ],
+          summary: `${selectedJiraIssue.key}: ${selectedJiraIssue.summary}`,
+          actionItems: [`Review ${selectedJiraIssue.key} and confirm the next action.`],
+          draftLines: [`Follow up on ${selectedJiraIssue.key}: ${selectedJiraIssue.summary} (${selectedJiraIssue.status})`],
+        }
+      : selectedAgent === "jira" && jiraIssues.length > 0
       ? {
           ...baseDetail,
           detailItems: [
@@ -584,7 +659,16 @@ export function ChatWorkspace() {
               actionItems: ["Search Confluence pages for a topic or recent workspace update.", "Open a result to retrieve the complete live page content."],
               draftLines: ["Load a live Confluence page before preparing a response."],
             }
-        : baseDetail;
+          : selectedAgent === "knowledge"
+            ? {
+                ...baseDetail,
+                summary: buildKnowledgeSummary(latestKnowledgeSummary || baseDetail.summary),
+                actionItems: ["Use the approved knowledge summary as the source of truth for the answer.", "Confirm the latest policy version before sharing the result."],
+                draftLines: [
+                  buildKnowledgeSummary(latestKnowledgeSummary || baseDetail.summary),
+                ],
+              }
+            : baseDetail;
 
   const filteredAgents = agents;
 
@@ -628,6 +712,7 @@ export function ChatWorkspace() {
         }));
         setEmailRows(rows);
         setSelectedEmail((current) => current ?? rows[0] ?? null);
+        addNotification("email", `MailMate loaded ${rows.length} unread email${rows.length === 1 ? "" : "s"}.`);
         if (showInChat) {
           setMessages((current) => [
             ...current,
@@ -635,6 +720,7 @@ export function ChatWorkspace() {
           ]);
         }
       } catch {
+        addNotification("email", "MailMate could not refresh the mailbox.");
         if (showInChat) {
           setMessages((current) => [
             ...current,
@@ -666,10 +752,14 @@ export function ChatWorkspace() {
         return match ? [{ start: `${match[1]} to ${match[2]}`, subject: match[3], location: match[4] || "" }] : [];
       });
       setMeetingPreview(events);
+      addNotification("meeting", `MeetMate refreshed ${events.length} upcoming meeting${events.length === 1 ? "" : "s"}.`);
     }
 
     if (jiraResult.status === "fulfilled") {
-      setJiraIssues(parseJiraIssues(jiraResult.value.answer));
+      const issues = parseJiraIssues(jiraResult.value.answer);
+      setJiraIssues(issues);
+      setSelectedJiraIssue(null);
+      addNotification("jira", `JiraPilot refreshed ${issues.length} issue${issues.length === 1 ? "" : "s"}.`);
     }
 
     if (confluenceResult.status === "fulfilled") {
@@ -678,6 +768,7 @@ export function ChatWorkspace() {
         .filter((line) => line.startsWith("- "))
         .map((line) => line.replace(/^[-*]\s+/, ""));
       setConfluencePreview(pages);
+      addNotification("confluence", `Confluence Coach refreshed ${pages.length} page${pages.length === 1 ? "" : "s"}.`);
     }
   }
 
@@ -696,9 +787,11 @@ export function ChatWorkspace() {
     setIsLoading(true);
 
     try {
+      const isConfluenceCommand = /^(?:please\s+)?(?:create|update)\s+(?:a\s+)?confluence\s+page\b/i.test(trimmed)
+        || /^open\s+confluence\s+page\b/i.test(trimmed);
       const requestMessage = selectedAgent === "email"
         ? `Email request: ${trimmed}`
-        : selectedAgent === "confluence" && confluenceDetails
+        : selectedAgent === "confluence" && confluenceDetails && !isConfluenceCommand
           ? `Confluence page ${confluenceDetails.pageId}: ${trimmed}`
           : trimmed;
       const result = await sendMessage("employee-session", requestMessage, selectedAgent);
@@ -733,7 +826,10 @@ export function ChatWorkspace() {
         }
       }
       if (selectedAgent === "jira") {
-        setJiraIssues(parseJiraIssues(result.answer));
+        const issues = parseJiraIssues(result.answer);
+        setJiraIssues(issues);
+        setSelectedJiraIssue(null);
+        addNotification("jira", `JiraPilot updated ${issues.length} issue${issues.length === 1 ? "" : "s"}.`);
       }
       if (selectedAgent === "confluence") {
         const pageDetails = parseConfluenceDetails(result.answer);
@@ -743,8 +839,10 @@ export function ChatWorkspace() {
         setConfluencePreview(result.answer.split(/\r?\n/).filter((line) => line.startsWith("- ")).map((line) => line.replace(/^[-*]\s+/, "")));
         if (pageContent && pageDetails) {
           displayedAnswer = `Selected Confluence page: ${pageDetails.title} (Page ID: ${pageDetails.pageId}). The full page content is available in the details panel.`;
+          addNotification("confluence", `Confluence Coach loaded ${pageDetails.title}.`);
         }
       }
+      addNotification(selectedAgent, `${agents.find((agent) => agent.id === selectedAgent)?.name ?? "Agent"} processed a new update.`);
       setMessages((current) => [
         ...current,
         {
@@ -798,6 +896,7 @@ export function ChatWorkspace() {
         analysis.keywords.length ? `Keywords: ${analysis.keywords.join(", ")}` : "",
       ].filter(Boolean).join("\n\n");
       setDocumentSummary(details);
+      addNotification("document", `Document Analyzer processed ${file.name}.`);
       setMessages((current) => [...current, { id: Date.now(), role: "assistant", text: analysis.summary, time: getTimestamp() }]);
     } catch (error) {
       setMessages((current) => [
@@ -842,6 +941,7 @@ export function ChatWorkspace() {
         body,
       );
       setStatusMessage(`Email sent via ${result.provider} to ${recipient}.`);
+      addNotification("email", `MailMate sent an email through ${result.provider}.`);
       setMessages((current) => [
         ...current,
         { id: Date.now(), role: "assistant", text: `Email sent via ${result.provider} to ${recipient}.`, time: getTimestamp() },
@@ -867,7 +967,10 @@ export function ChatWorkspace() {
 
     try {
       const result = await sendMessage("employee-session", "Show my recently updated Jira issues", "jira");
-      setJiraIssues(parseJiraIssues(result.answer));
+      const issues = parseJiraIssues(result.answer);
+      setJiraIssues(issues);
+      setSelectedJiraIssue(null);
+      addNotification("jira", `JiraPilot loaded ${issues.length} issue${issues.length === 1 ? "" : "s"}.`);
       setMessages((current) => [
         ...current,
         { id: Date.now(), role: "assistant", text: result.answer, time: getTimestamp() },
@@ -896,6 +999,9 @@ export function ChatWorkspace() {
     setMessages(agentId === "email" || agentId === "jira" ? [] : [...(initialMessagesByAgent[agentId] ?? [])]);
     setMessage("");
     setJiraIssues([]);
+    setSelectedJiraIssue(null);
+    setJiraTestCases([]);
+    setJiraTestCaseStoryKey("");
     setConfluenceDetails(null);
     setConfluencePageContent("");
     setConfluencePreview([]);
@@ -903,6 +1009,7 @@ export function ChatWorkspace() {
     setSelectedEmail(null);
     setEmailActionItems([]);
     setEmailDraftLines([]);
+    addNotification(agentId, `${agents.find((agent) => agent.id === agentId)?.name ?? "Workspace"} is ready for a new update.`);
     setStatusMessage(`${agents.find((agent) => agent.id === agentId)?.name ?? "Workspace"} is ready.`);
     if (agentId === "jira") {
       void loadJiraOverview();
@@ -1012,6 +1119,9 @@ export function ChatWorkspace() {
     setMessage("");
     setDocumentSummary("");
     setJiraIssues([]);
+    setSelectedJiraIssue(null);
+    setJiraTestCases([]);
+    setJiraTestCaseStoryKey("");
     setConfluenceDetails(null);
     setConfluencePageContent("");
     setEmailRows([]);
@@ -1053,9 +1163,13 @@ export function ChatWorkspace() {
     setStatusMessage("Draft loaded into the composer for editing.");
   }
 
+  function openTeamsCalendar() {
+    window.open("https://teams.microsoft.com/v2/#/calendar", "_blank", "noopener,noreferrer");
+  }
+
   function handleUtilityAction() {
     if (selectedAgent === "meeting") {
-      void submitMessage("Open Microsoft Teams");
+      openTeamsCalendar();
       return;
     }
     if (selectedAgent === "email") {
@@ -1094,12 +1208,25 @@ export function ChatWorkspace() {
     void submitMessage(`Open Confluence page /pages/${page.pageId}`);
   }
 
-  function startConfluenceCreate() {
+  async function startConfluenceCreate() {
     const title = window.prompt("Confluence page title:");
     if (!title?.trim()) return;
     const body = window.prompt("Confluence page content:");
     if (!body?.trim()) return;
-    void submitMessage(`Create a Confluence page: ${title.trim()} | ${body.trim()}`);
+    setIsLoading(true);
+    try {
+      const result = await createConfluencePage(title.trim(), body.trim());
+      setMessages((current) => [
+        ...current,
+        { id: Date.now(), role: "assistant", text: result.message, time: getTimestamp() },
+      ]);
+      setStatusMessage(`Confluence page created: ${result.url}`);
+      addNotification("confluence", `Confluence Coach created ${title.trim()}.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Unable to create the Confluence page.");
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   function startConfluenceUpdate() {
@@ -1108,6 +1235,87 @@ export function ChatWorkspace() {
     const body = window.prompt("Replacement page content:");
     if (!body?.trim()) return;
     void submitMessage(`Update Confluence page ${pageId.trim()}: ${body.trim()}`);
+  }
+
+  async function selectJiraIssue(issue: JiraIssue) {
+    setIsLoading(true);
+    setStatusMessage(`Loading ${issue.key}...`);
+    try {
+      const details = await getJiraStory(issue.key);
+      setSelectedJiraIssue({
+        ...issue,
+        summary: details.title,
+        project: details.metadata.project,
+        status: details.metadata.status,
+        assignee: details.metadata.assignee,
+        updated: details.metadata.updated,
+        issueType: details.metadata.issue_type,
+        description: details.description,
+        acceptanceCriteria: details.acceptance_criteria,
+      });
+      setJiraTestCases([]);
+      setJiraTestCaseStoryKey("");
+      setStatusMessage(`${issue.key} selected.`);
+    } catch (error) {
+      setSelectedJiraIssue(null);
+      setStatusMessage(error instanceof Error ? error.message : `Unable to load ${issue.key}.`);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function generateSelectedJiraTestCases() {
+    if (!selectedJiraIssue || selectedJiraIssue.issueType?.toLowerCase() !== "story") return;
+    setIsLoading(true);
+    setStatusMessage(`Generating five test cases for ${selectedJiraIssue.key}...`);
+    try {
+      const result = await generateJiraTestCases(selectedJiraIssue.key);
+      setJiraTestCases(result.test_cases);
+      setJiraTestCaseStoryKey(selectedJiraIssue.key);
+      setStatusMessage("Five test cases generated. Review them before saving to Jira.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Test case generation failed. Retry generation.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function saveJiraTestCases() {
+    if (!jiraTestCaseStoryKey || !jiraTestCases.length) return;
+    setIsLoading(true);
+    try {
+      const result = await createJiraTestCases(jiraTestCaseStoryKey, jiraTestCases);
+      setStatusMessage(`Created and linked ${result.created.length} test case${result.created.length === 1 ? "" : "s"} to ${result.story_key}.`);
+      addNotification("jira", `JiraPilot created ${result.created.length} linked test cases.`);
+      setJiraTestCases([]);
+      setJiraTestCaseStoryKey("");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Test case creation failed. Retry saving.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function startJiraCreate(issueType: "task" | "user story") {
+    const promptText = issueType === "task"
+      ? "Jira task summary:"
+      : "Jira user story (As a ..., I want ..., so that ...):";
+    const summary = window.prompt(promptText);
+    if (!summary?.trim()) return;
+    setIsLoading(true);
+    try {
+      const result = await createJiraIssue(issueType === "task" ? "Task" : "Story", summary.trim());
+      setMessages((current) => [
+        ...current,
+        { id: Date.now(), role: "assistant", text: result.message, time: getTimestamp() },
+      ]);
+      setStatusMessage(`Jira issue created: ${result.url}`);
+      addNotification("jira", `JiraPilot created ${issueType}.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Unable to create the Jira issue.");
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   async function createJiraStoryFromConfluence() {
@@ -1261,10 +1469,40 @@ export function ChatWorkspace() {
       <section className="workspace-content">
         <header className="topbar">
           <div className="topbar-actions">
-            <button type="button" className="icon-button" aria-label="Notifications" onClick={() => setNotificationsOpen((current) => !current)}>
+            <button
+              type="button"
+              className={`icon-button${unreadNotifications > 0 ? " has-unread" : ""}`}
+              aria-label="Notifications"
+              onClick={toggleNotifications}
+            >
               <Bell size={18} />
+              {unreadNotifications > 0 && <span className="notification-badge">{unreadNotifications}</span>}
             </button>
-            {notificationsOpen && <div className="notification-popover">No new notifications.</div>}
+            {notificationsOpen && (
+              <div className="notification-popover">
+                <div className="notification-header">
+                  <span>Agent activity</span>
+                  <span className="notification-count">{unreadNotifications} unread</span>
+                </div>
+                {notifications.length === 0 ? (
+                  <div className="notification-item empty">No new notifications.</div>
+                ) : (
+                  notifications.map((notification) => {
+                    const agent = agents.find((item) => item.id === notification.agentId);
+                    return (
+                      <div key={notification.id} className={`notification-item${notification.read ? " read" : ""}`}>
+                        <span className={`notification-dot ${notification.agentId}`} />
+                        <div className="notification-copy">
+                          <strong>{agent?.name ?? "Agent"}</strong>
+                          <span>{notification.message}</span>
+                        </div>
+                        <small>{notification.time}</small>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
           </div>
         </header>
         {statusMessage && <div className="status-message" role="status">{statusMessage}</div>}
@@ -1483,6 +1721,9 @@ export function ChatWorkspace() {
                     setMessage("");
                     setDocumentSummary("");
                     setJiraIssues([]);
+                    setSelectedJiraIssue(null);
+                    setJiraTestCases([]);
+                    setJiraTestCaseStoryKey("");
                     setConfluenceDetails(null);
                     setConfluencePreview([]);
                     setEmailRows([]);
@@ -1519,7 +1760,13 @@ export function ChatWorkspace() {
                             <strong>{jiraIssues.length}</strong>
                           </div>
                           {jiraIssues.map((issue) => (
-                            <article key={`${messageItem.id}-${issue.key}`} className="jira-issue-card">
+                            <button
+                              key={`${messageItem.id}-${issue.key}`}
+                              type="button"
+                              className={`jira-issue-card${selectedJiraIssue?.key === issue.key ? " selected" : ""}`}
+                              onClick={() => void selectJiraIssue(issue)}
+                              aria-label={`Select Jira issue ${issue.key}`}
+                            >
                               <div className="jira-issue-topline">
                                 <strong>{issue.key}</strong>
                                 <span className="jira-status-pill">{issue.status}</span>
@@ -1530,7 +1777,7 @@ export function ChatWorkspace() {
                                 <span>{issue.assignee}</span>
                                 <span>{issue.updated}</span>
                               </div>
-                            </article>
+                            </button>
                           ))}
                           {!jiraIssues.length && <p className="jira-empty-state">Jira issues could not be formatted.</p>}
                         </div>
@@ -1655,7 +1902,7 @@ export function ChatWorkspace() {
                       <CalendarDays size={16} />
                       Show Upcoming Meetings
                     </button>
-                    <button type="button" className="chip-button" onClick={() => void submitMessage("Open Microsoft Teams")}>
+                    <button type="button" className="chip-button" onClick={openTeamsCalendar}>
                       <MessageSquareText size={16} />
                       Open Teams
                     </button>
@@ -1703,17 +1950,22 @@ export function ChatWorkspace() {
                       <BriefcaseBusiness size={16} />
                       Sprint Summary
                     </button>
-                    <button type="button" className="chip-button" onClick={() => setMessage("Create a task: Add the next action item for this sprint.")}>
+                    <button type="button" className="chip-button" onClick={() => startJiraCreate("task")} disabled={isLoading}>
                       <Plus size={16} />
                       Create Task
-                    </button>
-                    <button type="button" className="chip-button" onClick={() => setMessage("Create a user story: As a banker, I want to review the next priority item so that I can take action quickly.")}>
-                      <PencilLine size={16} />
-                      Create User Story
                     </button>
                     <button type="button" className="chip-button" onClick={() => setMessage("Analyze story: As a banker, I want to review the high-priority task so that I can resolve the issue quickly.")}>
                       <CheckCheck size={16} />
                       Analyze Story
+                    </button>
+                    <button
+                      type="button"
+                      className="chip-button"
+                      onClick={() => void generateSelectedJiraTestCases()}
+                      disabled={isLoading || selectedJiraIssue?.issueType?.toLowerCase() !== "story"}
+                    >
+                      <Sparkles size={16} />
+                      Generate Test Cases
                     </button>
                   </>
                 ) : selectedAgent === "confluence" ? (
@@ -1766,7 +2018,7 @@ export function ChatWorkspace() {
               )}
             </section>}
 
-            {!workspaceHome && detailPanelOpen && selectedAgent !== "document" && <aside className="detail-panel">
+            {!workspaceHome && detailPanelOpen && selectedAgent !== "document" && <aside className={`detail-panel${selectedAgent === "knowledge" ? " knowledge-panel" : ""}`}>
               <div className="detail-card">
                 <div className="detail-header">
                   <div className="detail-heading">
@@ -1806,7 +2058,43 @@ export function ChatWorkspace() {
                 <p className="summary-copy">{activeDetail.summary}</p>
               </div>
 
-              {(selectedAgent !== "email" || emailDraftLines.length > 0) && <div className="detail-card draft-card">
+              {selectedAgent === "jira" && jiraTestCases.length > 0 && (
+                <div className="detail-card jira-test-case-preview">
+                  <div className="detail-header">
+                    <div className="detail-heading">
+                      <Sparkles size={16} />
+                      <span>Generated Test Cases ({jiraTestCases.length})</span>
+                    </div>
+                    <button type="button" className="utility-button" onClick={() => void generateSelectedJiraTestCases()} disabled={isLoading}>
+                      Retry
+                    </button>
+                  </div>
+                  <p className="summary-copy">Review, edit, or remove cases before creating them in Jira.</p>
+                  {jiraTestCases.map((testCase, index) => (
+                    <div className="jira-test-case" key={`${testCase.name}-${index}`}>
+                      <div className="jira-test-case-header">
+                        <strong>Test Case {index + 1}</strong>
+                        <button type="button" className="utility-button" onClick={() => setJiraTestCases((current) => current.filter((_, currentIndex) => currentIndex !== index))}>
+                          Delete
+                        </button>
+                      </div>
+                      <label>Name<input value={testCase.name} onChange={(event) => setJiraTestCases((current) => current.map((item, currentIndex) => currentIndex === index ? { ...item, name: event.target.value } : item))} /></label>
+                      <label>Objective<textarea value={testCase.objective} onChange={(event) => setJiraTestCases((current) => current.map((item, currentIndex) => currentIndex === index ? { ...item, objective: event.target.value } : item))} /></label>
+                      <label>Preconditions<textarea value={testCase.preconditions} onChange={(event) => setJiraTestCases((current) => current.map((item, currentIndex) => currentIndex === index ? { ...item, preconditions: event.target.value } : item))} /></label>
+                      <label>Test Steps<textarea value={testCase.steps.join("\n")} onChange={(event) => setJiraTestCases((current) => current.map((item, currentIndex) => currentIndex === index ? { ...item, steps: event.target.value.split("\n").filter(Boolean) } : item))} /></label>
+                      <label>Test Data<textarea value={testCase.test_data} onChange={(event) => setJiraTestCases((current) => current.map((item, currentIndex) => currentIndex === index ? { ...item, test_data: event.target.value } : item))} /></label>
+                      <label>Expected Result<textarea value={testCase.expected_result} onChange={(event) => setJiraTestCases((current) => current.map((item, currentIndex) => currentIndex === index ? { ...item, expected_result: event.target.value } : item))} /></label>
+                      <label>Priority<select value={testCase.priority} onChange={(event) => setJiraTestCases((current) => current.map((item, currentIndex) => currentIndex === index ? { ...item, priority: event.target.value as JiraTestCase["priority"] } : item))}><option>Highest</option><option>High</option><option>Medium</option><option>Low</option></select></label>
+                    </div>
+                  ))}
+                  <button type="button" className="primary-button wide" onClick={() => void saveJiraTestCases()} disabled={isLoading || !jiraTestCases.length || !jiraTestCaseStoryKey}>
+                    <CheckCheck size={16} />
+                    Create Linked Test Cases in Jira
+                  </button>
+                </div>
+              )}
+
+              {selectedAgent !== "knowledge" && (selectedAgent !== "email" || emailDraftLines.length > 0) && <div className="detail-card draft-card">
                 <div className="detail-header">
                   <div className="detail-heading">
                     <PencilLine size={16} />

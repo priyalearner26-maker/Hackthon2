@@ -53,6 +53,48 @@ def test_local_rag_normalizes_plural_query_terms(tmp_path: Path) -> None:
     assert results[0].source.endswith("api-contracts.md")
 
 
+def test_local_rag_handles_short_banking_queries_with_synonyms(tmp_path: Path) -> None:
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    (knowledge / "retail-banking-roles.md").write_text(
+        "Retail banking serves individual customers and small businesses through branches, digital channels, contact centres, and operational teams.",
+        encoding="utf-8",
+    )
+
+    results = KnowledgeRetriever(knowledge).search("what is core banking?")
+
+    assert results
+    assert results[0].source.endswith("retail-banking-roles.md")
+
+
+def test_local_rag_handles_misspelled_banking_queries(tmp_path: Path) -> None:
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    (knowledge / "retail-banking-roles.md").write_text(
+        "Retail banking serves individual customers and small businesses through branches, digital channels, contact centres, and operational teams.",
+        encoding="utf-8",
+    )
+
+    results = KnowledgeRetriever(knowledge).search("what is cor bankin?")
+
+    assert results
+    assert results[0].source.endswith("retail-banking-roles.md")
+
+
+def test_local_rag_handles_retail_spelling_variants(tmp_path: Path) -> None:
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    (knowledge / "retail-banking-roles.md").write_text(
+        "Retail banking serves individual customers and small businesses through branches, digital channels, contact centres, and operational teams.",
+        encoding="utf-8",
+    )
+
+    results = KnowledgeRetriever(knowledge).search("what is reail banking?")
+
+    assert results
+    assert results[0].source.endswith("retail-banking-roles.md")
+
+
 def test_local_rag_prefers_matching_policy_phrase(tmp_path: Path) -> None:
     knowledge = tmp_path / "knowledge"
     knowledge.mkdir()

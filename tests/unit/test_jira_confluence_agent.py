@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import httpx
+
 from backend.agents.jira_confluence_agent import JiraConfluenceAgent
 
 
@@ -162,8 +164,12 @@ def test_jira_agent_creates_task_from_natural_language(monkeypatch) -> None:
         request.update(kwargs)
         return CreatedResponse()
 
+    def fake_get(url: str, **kwargs: object) -> FakeResponse:
+        return FakeResponse()
+
     monkeypatch.setattr("backend.agents.jira_confluence_agent.settings", settings)
     monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.post", fake_post)
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.get", fake_get)
 
     result = JiraConfluenceAgent().run(SimpleNamespace(message="Create a task: Add audit logging"))
 
@@ -186,6 +192,47 @@ def test_jira_agent_analyzes_story_text() -> None:
     assert "Expected behavior: Defined" in result
 
 
+def test_jira_story_analysis_explains_missing_issue_key(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        jira_base_url="https://example.atlassian.net",
+        jira_email="user@example.com",
+        jira_api_token="token",
+        jira_project_key="BAIW",
+    )
+
+    response = httpx.Response(404, request=httpx.Request("GET", "https://example.atlassian.net/rest/api/3/issue/BR-001"))
+
+    def fake_get(url: str, **kwargs: object) -> object:
+        return response
+
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.settings", settings)
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.get", fake_get)
+
+    result = JiraConfluenceAgent().run(SimpleNamespace(message="Analyze story BR-001"))
+
+    assert "could not find BR-001" in result
+    assert "configured Jira project is BAIW" in result
+
+
+def test_jira_story_analysis_falls_back_to_inline_text_when_key_is_missing(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        jira_base_url="https://example.atlassian.net",
+        jira_email="user@example.com",
+        jira_api_token="token",
+        jira_project_key="BAIW",
+    )
+    response = httpx.Response(404, request=httpx.Request("GET", "https://example.atlassian.net/rest/api/3/issue/BR-001"))
+
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.settings", settings)
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.get", lambda *args, **kwargs: response)
+
+    result = JiraConfluenceAgent().run(
+        SimpleNamespace(message="Analyze story BR-001: As a banker, I want to review alerts so that I can approve accounts.")
+    )
+
+    assert "User story format: Ready" in result
+
+
 def test_jira_agent_creates_story_from_confluence_context(monkeypatch) -> None:
     settings = SimpleNamespace(
         jira_base_url="https://example.atlassian.net",
@@ -204,8 +251,12 @@ def test_jira_agent_creates_story_from_confluence_context(monkeypatch) -> None:
         request.update(kwargs)
         return CreatedResponse()
 
+    def fake_get(url: str, **kwargs: object) -> FakeResponse:
+        return FakeResponse()
+
     monkeypatch.setattr("backend.agents.jira_confluence_agent.settings", settings)
     monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.post", fake_post)
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.get", fake_get)
 
     result = JiraConfluenceAgent().run(
         SimpleNamespace(
@@ -219,6 +270,7 @@ def test_jira_agent_creates_story_from_confluence_context(monkeypatch) -> None:
     assert "Customer Verification" in request["json"]["fields"]["summary"]
     assert "one-time passcode" in str(request["json"]["fields"]["description"]).lower()
     assert "DEMO-42" in result
+    assert "Open issue: https://example.atlassian.net/browse/DEMO-42" in result
 
 
 def test_jira_agent_fetches_confluence_page_content(monkeypatch) -> None:
@@ -434,3 +486,37 @@ def test_confluence_agent_parses_page_update_request() -> None:
         "Use two checks",
         "101",
     )
+
+
+def test_confluence_agent_creates_page_in_configured_space(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        confluence_base_url="https://example.atlassian.net/wiki",
+        confluence_space_key="BANK",
+        jira_email="user@example.com",
+        jira_api_token="token",
+    )
+    request: dict[str, object] = {}
+
+    class ConfluenceCreatedResponse(CreatedResponse):
+        def json(self) -> dict[str, str]:
+            return {"id": "101"}
+
+    def fake_post(url: str, **kwargs: object) -> ConfluenceCreatedResponse:
+        request["url"] = url
+        request.update(kwargs)
+        return ConfluenceCreatedResponse()
+
+    def fake_get(url: str, **kwargs: object) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.settings", settings)
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.post", fake_post)
+    monkeypatch.setattr("backend.agents.jira_confluence_agent.httpx.get", fake_get)
+
+    result = JiraConfluenceAgent().run(SimpleNamespace(message="Create a Confluence page: Runbook | Restart the service"))
+
+    assert request["url"] == "https://example.atlassian.net/wiki/rest/api/content"
+    assert request["json"]["space"] == {"key": "BANK"}
+    assert "Restart the service" in request["json"]["body"]["storage"]["value"]
+    assert "Confluence page created successfully" in result
+    assert "Open page: https://example.atlassian.net/wiki/pages/101" in result

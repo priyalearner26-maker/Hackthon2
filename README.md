@@ -5,6 +5,7 @@ A bank employee workspace with a Next.js frontend, FastAPI backend, LangGraph re
 ## Project layout
 
 - `frontend/`: employee chat and dashboard UI
+- `playwright-dashboard/`: independent React/Vite + Express Playwright execution UI; it does not modify or share routes with `frontend/`
 - `backend/`: FastAPI API, LangGraph supervisor, specialist agents, integrations, and RAG
 - `data/`: source documents and vector-index artifacts
 - `tests/`: backend unit and integration tests
@@ -23,6 +24,7 @@ A bank employee workspace with a Next.js frontend, FastAPI backend, LangGraph re
 - **Document processing**: `pypdf`, `python-docx`, `openpyxl`, `python-pptx`, Pillow, and Tesseract OCR through `pytesseract`.
 - **Testing and quality**: pytest and Ruff configuration through `pyproject.toml`.
 - **Infrastructure**: Docker Compose with backend, frontend, PostgreSQL, and Redis services. PostgreSQL and Redis are provisioned for the workspace stack; current knowledge artifacts are stored locally in the `data/` directory.
+- **Test execution**: standalone Playwright dashboard with React/Vite, Express, Socket.IO, Material UI, Chart.js, XLSX export, and Allure reporting.
 
 ## Current capabilities
 
@@ -33,6 +35,7 @@ A bank employee workspace with a Next.js frontend, FastAPI backend, LangGraph re
 - **Document Analyzer**: upload and analyze PDF, Word, Excel, PowerPoint, text, JSON, HTML, and image files.
 - **Knowledge Hub**: approved-document retrieval with ChromaDB/FAISS when embeddings are configured and lexical fallback otherwise.
 - **AskBank**: general Q&A through OpenAI-compatible APIs or Ollama.
+- **Playwright Test Command**: independent story selection, mapped test cases, browser execution across Chromium/Firefox/WebKit, live logs, screenshots, videos, traces, charts, and report export.
 
 ## Development
 
@@ -58,6 +61,23 @@ npm run dev
 Open `http://localhost:3000`. The frontend defaults to `http://localhost:8000/api/v1`; set `NEXT_PUBLIC_API_BASE_URL` when the backend uses another port, for example `http://localhost:8001/api/v1`.
 
 Health check: `http://localhost:8000/health`.
+
+### Independent Playwright dashboard
+
+The Playwright dashboard is a separate application and deployment boundary. It does not modify the Main UI, its navigation, or its services.
+
+Start it from its own directory:
+
+```powershell
+cd playwright-dashboard
+npm install
+npm run playwright:install
+npm run dev
+```
+
+Open the dashboard at `http://127.0.0.1:4174`. Its isolated Express and Socket.IO execution API runs at `http://127.0.0.1:4175`.
+
+The dashboard includes user-story filtering, mapped test selection, complete/failed/selected execution, live progress and logs, browser selection, screenshot/video/trace artifacts, summary charts, session playback, and JSON/XLSX exports. Playwright artifacts are written under `playwright-dashboard/artifacts/`; Allure output is written under `playwright-dashboard/allure-results/`.
 
 ## Run with Docker Compose
 
@@ -168,3 +188,8 @@ For Classic Outlook, Outlook desktop must be installed, open, and signed in on t
 - `POST /api/v1/documents/upload`
 - `POST /api/v1/knowledge/search`
 - `POST /api/v1/knowledge/confluence/ingest`
+- `GET /api/v1/observability/summary`
+- `POST /api/v1/jira/test-cases/generate`
+- `POST /api/v1/jira/test-cases`
+
+The independent Playwright dashboard uses its own endpoints under `playwright-dashboard/server/index.ts` and does not add routes to the Main UI.

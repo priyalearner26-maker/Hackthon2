@@ -153,7 +153,39 @@ def _exact_source_guidance(message: str, passages: list[str]) -> str:
     return "\n".join(f"- {sentence}" for sentence in selected)
 
 
+def _evidence_overlap(message: str, passages: list[str]) -> int:
+    query_terms = set(re.findall(r"[a-z0-9]{3,}", message.casefold()))
+    if not query_terms:
+        return 0
+    total_overlap = 0
+    for passage in passages[:5]:
+        passage_terms = set(re.findall(r"[a-z0-9]{3,}", _clean_passage(passage).casefold()))
+        total_overlap += len(query_terms & passage_terms)
+    return total_overlap
+
+
+def _not_available_message() -> str:
+    return (
+        "The information you are searching for is not available in the approved knowledge base. "
+        "Please contact the relevant team for further clarification."
+    )
+
+
 def _concise_guidance(message: str, passages: list[str]) -> str:
+    if not passages:
+        return _not_available_message()
+
+    overlap = _evidence_overlap(message, passages)
+    if overlap == 0:
+        return _not_available_message()
+
+    lowered = message.casefold()
+    generic_policy_query = bool(re.search(r"\b(?:policy|policies|procedure|procedures)\b", lowered)) and not any(
+        term in lowered for term in ("retail banking", "loan", "mortgage", "eligibility", "verification", "customer", "lending")
+    )
+    if generic_policy_query:
+        return DocumentAgent().run(type("Context", (), {"message": message})())
+
     source_text = "\n\n".join(_clean_passage(passage) for passage in passages[:3])
     exact_answer = _exact_source_guidance(message, passages)
     if exact_answer:
@@ -187,7 +219,7 @@ Approved passages:
         ) | StrOutputParser()
         answer = chain.invoke({"question": message, "passages": source_text})
         if "not available in the approved knowledge base" in str(answer).casefold():
-            return fallback
+            return fallback if overlap > 1 else _not_available_message()
         bullets = [
             re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
             for line in str(answer).splitlines()
@@ -197,7 +229,7 @@ Approved passages:
             return "\n".join(f"- {bullet}" for bullet in bullets)
     except Exception:
         pass
-    return fallback
+    return fallback if overlap > 1 else _not_available_message()
 
 
 def route_agent(state: SupervisorState) -> SupervisorState:

@@ -140,27 +140,58 @@ def chunk_document(path: Path, text: str, chunk_size: int = 900, overlap: int = 
     if chunk_size <= overlap:
         raise ValueError("chunk_size must be greater than overlap")
 
+    cleaned_text = re.sub(r"\r\n?", "\n", text).strip()
+    if not cleaned_text:
+        return []
+
     metadata = metadata or {}
-    sections = re.split(r"(?=^#{1,6}\s+)", text.strip(), flags=re.MULTILINE)
-    normalized_sections = [re.sub(r"\s+", " ", section).strip() for section in sections if section.strip()]
+    sections = re.split(r"(?=^#{1,6}\s+)", cleaned_text, flags=re.MULTILINE)
+    normalized_sections: list[str] = []
+    for section in sections:
+        trimmed = section.strip()
+        if not trimmed:
+            continue
+        normalized_sections.append(re.sub(r"\s+", " ", trimmed))
+
     chunks: list[DocumentChunk] = []
     index = 0
     for section in normalized_sections:
-        start = 0
-        while start < len(section):
-            end = min(start + chunk_size, len(section))
-            if end < len(section):
-                boundary = section.rfind(" ", start, end)
-                if boundary > start:
-                    end = boundary
-            content = section[start:end].strip()
-            if content:
+        heading_match = re.match(r"^(#{1,6}\s+.*?)(?:\n|$)", section)
+        heading = heading_match.group(1).strip() if heading_match else ""
+        body = section[len(heading):].strip() if heading else section
+        sentence_candidates = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", body) if sentence.strip()]
+        if not sentence_candidates:
+            sentence_candidates = [body]
+
+        window: list[str] = []
+        window_chars = 0
+        for sentence in sentence_candidates:
+            candidate = f"{sentence} " if window else sentence
+            if window and (window_chars + len(candidate) > chunk_size):
+                content = " ".join(window)
+                if heading and not content.startswith(heading):
+                    content = f"{heading}\n\n{content}"
                 digest = hashlib.sha256(f"{path}:{index}:{content}".encode()).hexdigest()[:16]
                 chunks.append(DocumentChunk(digest, str(path), content, metadata=metadata))
                 index += 1
-            if end == len(section):
-                break
-            start = max(end - overlap, start + 1)
+                overlap_count = max(1, int(round(overlap / max(len(window[0]), 1))))
+                if overlap_count > 0:
+                    window = window[-overlap_count:]
+                    window_chars = sum(len(item) for item in window)
+                else:
+                    window = []
+                    window_chars = 0
+            window.append(sentence)
+            window_chars = sum(len(item) for item in window)
+
+        if window:
+            content = " ".join(window)
+            if heading and not content.startswith(heading):
+                content = f"{heading}\n\n{content}"
+            digest = hashlib.sha256(f"{path}:{index}:{content}".encode()).hexdigest()[:16]
+            chunks.append(DocumentChunk(digest, str(path), content, metadata=metadata))
+            index += 1
+
     return chunks
 
 
