@@ -1,0 +1,39 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+
+- script: |
+    echo "Checking repository..."
+    echo "Root directory:"
+    ls -la
+
+    echo "Backend:"
+    ls -la backend
+
+    echo "Frontend:"
+    ls -la frontend
+  displayName: 'Check source code'
+
+- task: Docker@2
+  displayName: 'Build backend Docker image'
+  inputs:
+    command: 'build'
+    repository: 'hackthon2-backend'
+    Dockerfile: '$(Build.SourcesDirectory)/backend/Dockerfile'
+    buildContext: '$(Build.SourcesDirectory)/backend'
+    tags: |
+      $(Build.BuildId)
+
+- task: Docker@2
+  displayName: 'Build frontend Docker image'
+  inputs:
+    command: 'build'
+    repository: 'hackthon2-frontend'
+    Dockerfile: '$(Build.SourcesDirectory)/frontend/Dockerfile'
+    buildContext: '$(Build.SourcesDirectory)/frontend'
+    tags: |
+      $(Build.BuildId)
