@@ -16,6 +16,9 @@ steps:
 
     echo "Frontend:"
     ls -la frontend
+
+    echo "Data:"
+    ls -la data
   displayName: 'Check source code'
 
 - task: Docker@2
@@ -24,7 +27,7 @@ steps:
     command: 'build'
     repository: 'hackthon2-backend'
     Dockerfile: '$(Build.SourcesDirectory)/backend/Dockerfile'
-    buildContext: '$(Build.SourcesDirectory)/backend'
+    buildContext: '$(Build.SourcesDirectory)'
     tags: |
       $(Build.BuildId)
 
